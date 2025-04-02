@@ -1,4 +1,4 @@
-module mwazovzky/config
+module github.com/mwazovzky/config
 
 go 1.23.0
 
