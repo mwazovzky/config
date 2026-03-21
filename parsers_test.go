@@ -1,7 +1,7 @@
 package config
 
 import (
-	"os"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -9,300 +9,279 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestStringParser_Parse(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-		want  string
-	}{
-		{"normal string", "test", "test"},
-		{"empty string", "", ""},
-		{"with spaces", "test value", "test value"},
-		{"with special chars", "test@123!", "test@123!"},
-	}
-
-	parser := &StringParser{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			field := reflect.New(reflect.TypeOf("")).Elem()
-			err := parser.Parse(tt.value, field)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.want, field.String())
-		})
-	}
+func TestParseValue_String(t *testing.T) {
+	field := reflect.New(reflect.TypeOf("")).Elem()
+	assert.NoError(t, parseValue("hello", field))
+	assert.Equal(t, "hello", field.String())
 }
 
-func TestInt64Parser_Parse(t *testing.T) {
+func TestParseValue_EmptyStringIsNoop(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(int64(0))).Elem()
+	field.SetInt(42)
+	assert.NoError(t, parseValue("", field))
+	assert.Equal(t, int64(42), field.Int()) // unchanged
+}
+
+func TestParseValue_EmptyStringIsNoop_Slice(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
+	field.Set(reflect.ValueOf([]int64{99})) // sentinel: parseSlice("") would reset this
+	assert.NoError(t, parseValue("", field))
+	assert.Equal(t, []int64{99}, field.Interface()) // guard: early return left it intact
+}
+
+func TestParseValue_Int64(t *testing.T) {
 	tests := []struct {
-		name    string
 		value   string
 		want    int64
 		wantErr bool
 	}{
-		{"valid number", "123", 123, false},
-		{"empty string", "", 0, false},
-		{"invalid number", "abc", 0, true},
-		{"negative number", "-123", -123, false},
+		{"123", 123, false},
+		{"-123", -123, false},
+		{"abc", 0, true},
 	}
-
-	parser := &Int64Parser{}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			field := reflect.New(reflect.TypeOf(int64(0))).Elem()
-			err := parser.Parse(tt.value, field)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want, field.Int())
-			}
-		})
-	}
-}
-
-func TestSliceParser_Parse(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   string
-		typ     reflect.Type
-		want    interface{}
-		wantErr bool
-	}{
-		{
-			name:  "string slice",
-			value: "a,b,c",
-			typ:   reflect.TypeOf([]string{}),
-			want:  []string{"a", "b", "c"},
-		},
-		{
-			name:  "int64 slice",
-			value: "1,2,3",
-			typ:   reflect.TypeOf([]int64{}),
-			want:  []int64{1, 2, 3},
-		},
-		{
-			name:    "invalid int slice",
-			value:   "1,a,3",
-			typ:     reflect.TypeOf([]int64{}),
-			wantErr: true,
-		},
-		{
-			name:  "empty slice",
-			value: "",
-			typ:   reflect.TypeOf([]string{}),
-			want:  []string(nil),
-		},
-	}
-
-	parser := &SliceParser{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			field := reflect.New(tt.typ).Elem()
-			err := parser.Parse(tt.value, field)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want, field.Interface())
-			}
-		})
-	}
-}
-
-func TestSliceParserEdgeCases(t *testing.T) {
-	parser := &SliceParser{}
-
-	// Test with unsupported element type
-	t.Run("unsupported element type", func(t *testing.T) {
-		// Create a slice of an unsupported type (e.g., complex64)
-		field := reflect.New(reflect.TypeOf([]complex64{})).Elem()
-		err := parser.Parse("1,2,3", field)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unsupported slice element type")
-	})
-
-	// Test empty value
-	t.Run("empty value", func(t *testing.T) {
-		field := reflect.New(reflect.TypeOf([]string{})).Elem()
-		err := parser.Parse("", field)
-		assert.NoError(t, err)
-		assert.Equal(t, 0, field.Len())
-	})
-}
-
-type BoolWithDefault struct {
-	Value bool `default:"true"`
-}
-
-type FloatWithDefault struct {
-	Value float64 `default:"1.23"`
-}
-
-func TestBoolParser_Parse(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   string
-		want    bool
-		wantErr bool
-	}{
-		{"true value", "true", true, false},
-		{"false value", "false", false, false},
-		{"invalid value", "invalid", false, true},
-	}
-
-	parser := &BoolParser{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			field := reflect.New(reflect.TypeOf(bool(false))).Elem()
-			field.SetBool(false)
-			err := parser.Parse(tt.value, field)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want, field.Bool())
-			}
-		})
-	}
-
-	// Test with the EnvLoader for default values
-	t.Run("empty with default", func(t *testing.T) {
-		type TestConfig struct {
-			Value bool `env:"TEST_BOOL" default:"true"`
+		field := reflect.New(reflect.TypeOf(int64(0))).Elem()
+		err := parseValue(tt.value, field)
+		if tt.wantErr {
+			assert.Error(t, err)
+		} else {
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, field.Int())
 		}
-
-		// Make sure env var is not set
-		os.Unsetenv("TEST_BOOL")
-
-		cfg := &TestConfig{}
-		loader := NewEnvLoader()
-		err := loader.LoadConfig(cfg)
-
-		assert.NoError(t, err)
-		assert.Equal(t, true, cfg.Value)
-	})
-}
-
-func TestFloat64Parser_Parse(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   string
-		want    float64
-		wantErr bool
-	}{
-		{"valid float", "3.14", 3.14, false},
-		{"integer float", "42", 42.0, false},
-		{"invalid float", "not-a-float", 0, true},
-	}
-
-	parser := &Float64Parser{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			field := reflect.New(reflect.TypeOf(float64(0))).Elem()
-			err := parser.Parse(tt.value, field)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want, field.Float())
-			}
-		})
-	}
-
-	// Test with the EnvLoader for default values
-	t.Run("empty with default", func(t *testing.T) {
-		type TestConfig struct {
-			Value float64 `env:"TEST_FLOAT" default:"1.23"`
-		}
-
-		// Make sure env var is not set
-		os.Unsetenv("TEST_FLOAT")
-
-		cfg := &TestConfig{}
-		loader := NewEnvLoader()
-		err := loader.LoadConfig(cfg)
-
-		assert.NoError(t, err)
-		assert.Equal(t, 1.23, cfg.Value)
-	})
-}
-
-func TestIntParser_Parse(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   string
-		want    int64 // Changed from int to int64
-		wantErr bool
-	}{
-		{"valid number", "123", 123, false},
-		{"empty string", "", 0, false},
-		{"invalid number", "abc", 0, true},
-		{"negative number", "-123", -123, false},
-		{"zero", "0", 0, false},
-		{"large number", "2147483647", 2147483647, false},
-	}
-
-	parser := &IntParser{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			field := reflect.New(reflect.TypeOf(0)).Elem()
-			err := parser.Parse(tt.value, field)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want, field.Int()) // Compare with field.Int() which returns int64
-			}
-		})
 	}
 }
 
-func TestDurationParser_Parse(t *testing.T) {
+func TestParseValue_Duration(t *testing.T) {
 	tests := []struct {
-		name    string
 		value   string
 		want    time.Duration
 		wantErr bool
 	}{
-		{"valid duration with unit", "5m", 5 * time.Minute, false},
-		{"valid duration without unit (seconds)", "30", 30 * time.Second, false},
-		{"empty string", "", 0, false},
-		{"invalid duration", "invalid", 0, true},
-		{"negative duration", "-10s", -10 * time.Second, false},
+		{"5m", 5 * time.Minute, false},
+		{"30s", 30 * time.Second, false},
+		{"30", 0, true},   // bare integer rejected
+		{"invalid", 0, true},
+		{"-10s", -10 * time.Second, false},
 	}
-
-	parser := &DurationParser{}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			field := reflect.New(reflect.TypeOf(time.Duration(0))).Elem()
-			err := parser.Parse(tt.value, field)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want, field.Interface())
-			}
-		})
+		field := reflect.New(reflect.TypeOf(time.Duration(0))).Elem()
+		err := parseValue(tt.value, field)
+		if tt.wantErr {
+			assert.Error(t, err)
+		} else {
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, field.Interface())
+		}
 	}
+}
+
+func TestParseValue_Bool(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(false)).Elem()
+	assert.NoError(t, parseValue("true", field))
+	assert.True(t, field.Bool())
+
+	assert.Error(t, parseValue("invalid", field))
+}
+
+func TestParseValue_Float(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(float64(0))).Elem()
+	assert.NoError(t, parseValue("3.14", field))
+	assert.Equal(t, 3.14, field.Float())
+
+	assert.Error(t, parseValue("not-a-float", field))
+}
+
+func TestParseValue_FloatNaN(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(float64(0))).Elem()
+	err := parseValue("NaN", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid float value")
+}
+
+func TestParseValue_FloatInf(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(float64(0))).Elem()
+	err := parseValue("+Inf", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid float value")
+}
+
+func TestParseValue_FloatNegInf(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(float64(0))).Elem()
+	err := parseValue("-Inf", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid float value")
+}
+
+func TestParseValue_UnsupportedType(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(complex64(0))).Elem()
+	err := parseValue("1+2i", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported type")
+}
+
+func TestParseSlice_StringSlice(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]string{})).Elem()
+	assert.NoError(t, parseValue("a,b,c", field))
+	assert.Equal(t, []string{"a", "b", "c"}, field.Interface())
+}
+
+func TestParseSlice_Int64Slice(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
+	assert.NoError(t, parseValue("1,2,3", field))
+	assert.Equal(t, []int64{1, 2, 3}, field.Interface())
+}
+
+func TestParseSlice_InvalidElement(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
+	err := parseValue("1,abc,3", field)
+	assert.Error(t, err)
+}
+
+func TestParseValue_PointerToStructErrors(t *testing.T) {
+	type Inner struct{ Port int }
+	// reflect.New(*Inner).Elem() gives an addressable *Inner value (kind=Ptr, Elem=Struct).
+	field := reflect.New(reflect.TypeOf((*Inner)(nil))).Elem()
+	err := parseValue("foo", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "pointer to struct is not supported")
+}
+
+func TestParseSlice_StructSlice(t *testing.T) {
+	// []SomeStruct is not a supported slice element type; parseValue must error.
+	type Inner struct{ Port int }
+	field := reflect.New(reflect.SliceOf(reflect.TypeOf(Inner{}))).Elem()
+	err := parseValue("foo,bar", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported type")
+}
+
+func TestParseSlice_DurationSlice(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]time.Duration{})).Elem()
+	assert.NoError(t, parseValue("1s,2m,500ms", field))
+	assert.Equal(t, []time.Duration{time.Second, 2 * time.Minute, 500 * time.Millisecond}, field.Interface())
+}
+
+func TestParseValue_Decoder(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(customAddr(""))).Elem()
+	assert.NoError(t, parseValue("localhost:8080", field))
+	assert.Equal(t, customAddr("localhost:8080"), field.Interface())
+}
+
+func TestParseValue_StructDecoder(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(structAddr{})).Elem()
+	assert.NoError(t, parseValue("127.0.0.1:9000", field))
+	assert.Equal(t, structAddr{Raw: "127.0.0.1:9000"}, field.Interface())
+}
+
+// structErrAddr is a struct-kinded Decoder whose Decode always fails.
+type structErrAddr struct{ Raw string }
+
+func (a *structErrAddr) Decode(value string) error {
+	return fmt.Errorf("structErrAddr: forced error for %q", value)
+}
+
+func TestParseValue_StructDecoder_Error(t *testing.T) {
+	field := reflect.New(reflect.TypeOf(structErrAddr{})).Elem()
+	err := parseValue("anything", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "structErrAddr: forced error")
+}
+
+func TestDefaultValues_Slice(t *testing.T) {
+	type Cfg struct {
+		Tags []string `env:"CFG_TAGS" default:"a,b,c"`
+	}
+	unsetEnv(t, "CFG_TAGS")
+	cfg := &Cfg{}
+	assert.NoError(t, LoadConfig(cfg))
+	assert.Equal(t, []string{"a", "b", "c"}, cfg.Tags)
+}
+
+func TestParseSlice_EmptyElement(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
+	assert.NoError(t, parseValue("1,,3", field))
+	assert.Equal(t, []int64{1, 0, 3}, field.Interface())
+}
+
+func TestParseSlice_TrailingComma(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
+	assert.NoError(t, parseValue("1,2,", field))
+	assert.Equal(t, []int64{1, 2, 0}, field.Interface())
+}
+
+func TestParseSlice_TrimsWhitespace(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]string{})).Elem()
+	assert.NoError(t, parseValue("a, b, c", field))
+	assert.Equal(t, []string{"a", "b", "c"}, field.Interface())
+}
+
+func TestParseSlice_TrimsWhitespace_Int(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
+	assert.NoError(t, parseValue("1, 2, 3", field))
+	assert.Equal(t, []int64{1, 2, 3}, field.Interface())
+}
+
+func TestParseSlice_WhitespaceOnlyString(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]string{})).Elem()
+	assert.NoError(t, parseValue(" ", field))
+	assert.Equal(t, []string{""}, field.Interface())
+}
+
+func TestParseSlice_WhitespaceOnlyInt(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
+	assert.NoError(t, parseValue(" ", field))
+	assert.Equal(t, []int64{0}, field.Interface())
+}
+
+func TestParseSlice_DecoderEmptyToken(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]customAddr{})).Elem()
+	assert.NoError(t, parseValue("a,,b", field))
+	assert.Equal(t, []customAddr{"a", "", "b"}, field.Interface())
+}
+
+func TestParseSlice_Float64Slice(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]float64{})).Elem()
+	assert.NoError(t, parseValue("1.1,2.2,3.3", field))
+	assert.Equal(t, []float64{1.1, 2.2, 3.3}, field.Interface())
+}
+
+func TestParseSlice_BoolSlice(t *testing.T) {
+	field := reflect.New(reflect.TypeOf([]bool{})).Elem()
+	assert.NoError(t, parseValue("true,false,true", field))
+	assert.Equal(t, []bool{true, false, true}, field.Interface())
+}
+
+func TestParseSlice_PointerNonStructElement(t *testing.T) {
+	field := reflect.New(reflect.SliceOf(reflect.TypeOf((*string)(nil)))).Elem()
+	err := parseValue("foo,bar", field)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported type")
+}
+
+func TestDefaultValues_Slice_InvalidElement(t *testing.T) {
+	type Cfg struct {
+		Nums []int64 `env:"DSIE_NUMS" default:"1,bad,3"`
+	}
+	unsetEnv(t, "DSIE_NUMS")
+	err := LoadConfig(&Cfg{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "DSIE_NUMS:")
 }
 
 func TestDefaultValues(t *testing.T) {
 	type DefaultStruct struct {
-		String string  `env:"TEST_STRING" default:"default-string"`
-		Int    int     `env:"TEST_INT" default:"42"`
-		Float  float64 `env:"TEST_FLOAT" default:"3.14"`
-		Bool   bool    `env:"TEST_BOOL" default:"true"`
+		String string  `env:"CFG_DEFAULT_STR" default:"default-string"`
+		Int    int     `env:"CFG_DEFAULT_INT" default:"42"`
+		Float  float64 `env:"CFG_DEFAULT_FLOAT" default:"3.14"`
+		Bool   bool    `env:"CFG_DEFAULT_BOOL" default:"true"`
 	}
 
-	// Make sure env vars are not set
-	os.Unsetenv("TEST_STRING")
-	os.Unsetenv("TEST_INT")
-	os.Unsetenv("TEST_FLOAT")
-	os.Unsetenv("TEST_BOOL")
+	for _, k := range []string{"CFG_DEFAULT_STR", "CFG_DEFAULT_INT", "CFG_DEFAULT_FLOAT", "CFG_DEFAULT_BOOL"} {
+		unsetEnv(t, k)
+	}
 
 	cfg := &DefaultStruct{}
 	err := LoadConfig(cfg)
-
 	assert.NoError(t, err)
 	assert.Equal(t, "default-string", cfg.String)
 	assert.Equal(t, 42, cfg.Int)

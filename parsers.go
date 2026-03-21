@@ -2,158 +2,109 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// StringParser parses string values into the target field type
-type StringParser struct{}
+var durationType = reflect.TypeOf(time.Duration(0))
 
-// Parse converts a string value to the target field type
-func (p *StringParser) Parse(value string, field reflect.Value) error {
-	field.SetString(value)
-	return nil
-}
-
-// Int64Parser parses int64 values into the target field type
-type Int64Parser struct{}
-
-// Parse converts a string value to an int64 and sets it to the target field
-func (p *Int64Parser) Parse(value string, field reflect.Value) error {
-	if value == "" {
-		return nil
+// parseValue sets field to the parsed form of value.
+//
+// Priority order:
+//  1. If *field implements Decoder, call Decode.
+//     In the normal LoadConfig flow, direct Decoder fields are handled earlier
+//     in loadField; this Decoder check is reached for slice elements.
+//  2. Type-specific cases (types that share a Kind with another, e.g. time.Duration).
+//  3. Kind-based cases covering all int/uint/float widths, string, bool, and slice.
+//
+// An empty value is a no-op for all built-in types (field retains its zero value).
+// The required check is handled separately in loadField.
+func parseValue(value string, field reflect.Value) error {
+	// 1. Custom Decoder takes priority.
+	// In the slice-element context (the only path where parseValue is called for Decoder
+	// types), Decode always receives the raw token value — including "" for empty tokens —
+	// unlike built-in types which treat "" as a no-op. Absent non-required direct fields
+	// are handled in loadField and never reach here.
+	if d, ok := field.Addr().Interface().(Decoder); ok {
+		return d.Decode(value)
 	}
-	v, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return err
+
+	// Belt-and-suspenders guard for direct parseValue callers.
+	// In normal LoadConfig flow, loadStruct catches both *Struct and []*Struct
+	// before any parsing occurs, so this guard is only reachable via unit tests.
+	if field.Kind() == reflect.Ptr && field.Type().Elem().Kind() == reflect.Struct {
+		return fmt.Errorf("pointer to struct is not supported for type %s; use a value struct instead", field.Type())
 	}
-	field.SetInt(v)
-	return nil
-}
 
-// IntParser parses int values into the target field type
-type IntParser struct{}
-
-// Parse converts a string value to an int and sets it to the target field
-func (p *IntParser) Parse(value string, field reflect.Value) error {
-	if value == "" {
-		return nil
-	}
-	v, err := strconv.Atoi(value)
-	if err != nil {
-		return err
-	}
-	field.SetInt(int64(v))
-	return nil
-}
-
-// SliceParser parses slice values into the target field type
-type SliceParser struct{}
-
-// Parse converts a comma-separated string into a slice and sets it to the target field
-func (p *SliceParser) Parse(value string, field reflect.Value) error {
-	return p.ParseWithContext(value, field)
-}
-
-// ParseWithContext provides the full functionality with parser provider
-func (p *SliceParser) ParseWithContext(value string, field reflect.Value, parserProvider ...func(reflect.Kind) (ValueParser, bool)) error {
 	if value == "" {
 		return nil
 	}
 
-	values := strings.Split(value, ",")
-	slice := reflect.MakeSlice(field.Type(), 0, len(values))
-
-	// Get the element parser either from the provided function or defaultParsers
-	var getParser func(reflect.Kind) (ValueParser, bool)
-	if len(parserProvider) > 0 && parserProvider[0] != nil {
-		getParser = parserProvider[0]
-	} else {
-		getParser = func(k reflect.Kind) (ValueParser, bool) {
-			p, ok := defaultParsers[k]
-			return p, ok
+	// 2. Type-specific cases first (types that share a Kind).
+	switch field.Type() {
+	case durationType:
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return err
 		}
+		field.Set(reflect.ValueOf(d))
+		return nil
 	}
 
-	elemParser, ok := getParser(field.Type().Elem().Kind())
-	if !ok {
-		return fmt.Errorf("unsupported slice element type: %v", field.Type().Elem().Kind())
+	// 3. Kind-based cases.
+	switch field.Kind() {
+	case reflect.String:
+		field.SetString(value)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v, err := strconv.ParseInt(value, 10, field.Type().Bits())
+		if err != nil {
+			return err
+		}
+		field.SetInt(v)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v, err := strconv.ParseUint(value, 10, field.Type().Bits())
+		if err != nil {
+			return err
+		}
+		field.SetUint(v)
+	case reflect.Float32, reflect.Float64:
+		v, err := strconv.ParseFloat(value, field.Type().Bits())
+		if err != nil {
+			return err
+		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("invalid float value: must be a finite number")
+		}
+		field.SetFloat(v)
+	case reflect.Bool:
+		v, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		field.SetBool(v)
+	case reflect.Slice:
+		return parseSlice(value, field)
+	default:
+		return fmt.Errorf("unsupported type: %s", field.Type())
 	}
+	return nil
+}
 
-	for _, v := range values {
+// parseSlice splits value on commas and calls parseValue recursively for each element.
+func parseSlice(value string, field reflect.Value) error {
+	parts := strings.Split(value, ",")
+	slice := reflect.MakeSlice(field.Type(), 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
 		elem := reflect.New(field.Type().Elem()).Elem()
-		if err := elemParser.Parse(v, elem); err != nil {
+		if err := parseValue(p, elem); err != nil {
 			return err
 		}
 		slice = reflect.Append(slice, elem)
 	}
-
 	field.Set(slice)
 	return nil
-}
-
-// DurationParser parses duration values into the target field type
-type DurationParser struct{}
-
-// Parse converts a string value to a time.Duration and sets it to the target field
-func (p *DurationParser) Parse(value string, field reflect.Value) error {
-	if value == "" {
-		return nil
-	}
-
-	// If no time unit is specified, assume seconds
-	if _, err := strconv.Atoi(value); err == nil {
-		value += "s"
-	}
-
-	d, err := time.ParseDuration(value)
-	if err != nil {
-		return err
-	}
-	field.Set(reflect.ValueOf(d))
-	return nil
-}
-
-// BoolParser parses boolean values into the target field type
-type BoolParser struct{}
-
-// Parse converts a string value to a bool and sets it to the target field
-func (p *BoolParser) Parse(value string, field reflect.Value) error {
-	if value == "" {
-		return nil
-	}
-	v, err := strconv.ParseBool(value)
-	if err != nil {
-		return err
-	}
-	field.SetBool(v)
-	return nil
-}
-
-// Float64Parser parses float64 values into the target field type
-type Float64Parser struct{}
-
-// Parse converts a string value to a float64 and sets it to the target field
-func (p *Float64Parser) Parse(value string, field reflect.Value) error {
-	if value == "" {
-		return nil
-	}
-	v, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return err
-	}
-	field.SetFloat(v)
-	return nil
-}
-
-// defaultParsers maps reflect.Kind to their respective ValueParser implementations
-var defaultParsers = map[reflect.Kind]ValueParser{
-	reflect.String:  &StringParser{},
-	reflect.Int64:   &Int64Parser{},
-	reflect.Int:     &IntParser{},
-	reflect.Slice:   &SliceParser{},
-	reflect.Bool:    &BoolParser{},
-	reflect.Float64: &Float64Parser{},
 }

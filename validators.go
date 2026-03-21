@@ -1,129 +1,180 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
+	"time"
 )
 
-// RequiredValidator ensures a field isn't empty or zero
-type RequiredValidator struct{}
-
-// Validate checks if the field satisfies the required constraint
-func (v *RequiredValidator) Validate(field reflect.Value, tags reflect.StructTag) error {
-	if tags.Get(RequiredTag) != TagTrue {
-		return nil
+// parseDurationBound parses a min/max tag value for a time.Duration field.
+// It tries time.ParseDuration first (e.g. "1s", "500ms"), then falls back to
+// strconv.ParseInt for bare nanosecond integers (e.g. "1000000000").
+func parseDurationBound(s string) (int64, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		return int64(d), nil
 	}
+	return strconv.ParseInt(s, 10, 64)
+}
 
-	if isZeroValue(field) {
-		return fmt.Errorf(ErrRequiredField)
+// applyBounds checks that val is within [min, max], builds human-readable errors
+// using format, and applies customErr if set. It is called after bounds are already
+// parsed from tag strings.
+func applyBounds[T int64 | uint64 | float64](
+	val, min, max T, hasMin, hasMax bool,
+	format func(T) string, customErr string,
+) error {
+	if hasMin && hasMax && min > max {
+		return fmt.Errorf("invalid range: min %s is greater than max %s",
+			format(min), format(max))
 	}
-
+	var rangeErr error
+	if hasMin && val < min {
+		rangeErr = fmt.Errorf("%s is less than minimum %s", format(val), format(min))
+	}
+	if rangeErr == nil && hasMax && val > max {
+		rangeErr = fmt.Errorf("%s is greater than maximum %s", format(val), format(max))
+	}
+	if rangeErr != nil {
+		if customErr != "" {
+			return errors.New(customErr)
+		}
+		return fmt.Errorf("value out of range: %w", rangeErr)
+	}
 	return nil
 }
 
-func isZeroValue(v reflect.Value) bool {
-	switch v.Kind() {
-	case reflect.Slice, reflect.Map:
-		return v.Len() == 0
-	case reflect.String:
-		return v.String() == ""
+// checkRequired returns an error when the field is tagged required:"true" but
+// was not provided (no env var set and no default tag).
+// It also rejects non-standard tag values (e.g. "True", "TRUE") to catch
+// misconfiguration early.
+func checkRequired(tag reflect.StructTag, provided bool) error {
+	v := tag.Get(RequiredTag)
+	if v == "" || v == tagTrue || v == "false" {
+		if v == tagTrue && !provided {
+			return fmt.Errorf("required field is missing")
+		}
+		return nil
+	}
+	return fmt.Errorf("invalid required tag value %q (must be %q or %q)", v, "true", "false")
+}
+
+// checkRange validates numeric fields against min/max struct tags.
+// It handles all int/uint/float widths and time.Duration.
+// Range tags on non-numeric types return an error.
+// Duration error messages use time.Duration.String() for readability.
+// The range_error tag is not applied to tag misconfiguration errors
+// (invalid min/max format or min > max); those always return a plain error.
+func checkRange(field reflect.Value, tag reflect.StructTag) error {
+	minStr := tag.Get(MinTag)
+	maxStr := tag.Get(MaxTag)
+	if minStr == "" && maxStr == "" {
+		return nil
+	}
+
+	customErr := tag.Get(RangeErrTag)
+
+	switch field.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return v.Int() == 0
+		isDuration := field.Type() == durationType
+		val := field.Int()
+		var min, max int64
+		if minStr != "" {
+			var err error
+			if isDuration {
+				min, err = parseDurationBound(minStr)
+				if err != nil {
+					return fmt.Errorf("invalid min value (must be a duration string (e.g. \"1s\") or nanosecond integer): %w", err)
+				}
+			} else {
+				min, err = strconv.ParseInt(minStr, 10, 64)
+				if err != nil {
+					return fmt.Errorf("invalid min value: %w", err)
+				}
+			}
+		}
+		if maxStr != "" {
+			var err error
+			if isDuration {
+				max, err = parseDurationBound(maxStr)
+				if err != nil {
+					return fmt.Errorf("invalid max value (must be a duration string (e.g. \"1s\") or nanosecond integer): %w", err)
+				}
+			} else {
+				max, err = strconv.ParseInt(maxStr, 10, 64)
+				if err != nil {
+					return fmt.Errorf("invalid max value: %w", err)
+				}
+			}
+		}
+		var fmtFn func(int64) string
+		if isDuration {
+			fmtFn = func(n int64) string { return time.Duration(n).String() }
+		} else {
+			fmtFn = func(n int64) string { return strconv.FormatInt(n, 10) }
+		}
+		return applyBounds(val, min, max, minStr != "", maxStr != "", fmtFn, customErr)
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		val := field.Uint()
+		var min, max uint64
+		if minStr != "" {
+			var err error
+			min, err = strconv.ParseUint(minStr, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid min value: %w", err)
+			}
+		}
+		if maxStr != "" {
+			var err error
+			max, err = strconv.ParseUint(maxStr, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid max value: %w", err)
+			}
+		}
+		return applyBounds(val, min, max, minStr != "", maxStr != "",
+			func(n uint64) string { return strconv.FormatUint(n, 10) }, customErr)
+
 	case reflect.Float32, reflect.Float64:
-		return v.Float() == 0
+		val := field.Float()
+		// Guard for Decoder implementations that may produce non-finite values;
+		// parseValue already blocks NaN/Inf for built-in float parsing.
+		if math.IsNaN(val) || math.IsInf(val, 0) {
+			if customErr != "" {
+				return errors.New(customErr)
+			}
+			return fmt.Errorf("value out of range: field value is not a finite number")
+		}
+		var min, max float64
+		if minStr != "" {
+			var err error
+			min, err = strconv.ParseFloat(minStr, field.Type().Bits())
+			if err != nil {
+				return fmt.Errorf("invalid min value: %w", err)
+			}
+			if math.IsNaN(min) || math.IsInf(min, 0) {
+				return fmt.Errorf("invalid min value: must be a finite number")
+			}
+		}
+		if maxStr != "" {
+			var err error
+			max, err = strconv.ParseFloat(maxStr, field.Type().Bits())
+			if err != nil {
+				return fmt.Errorf("invalid max value: %w", err)
+			}
+			if math.IsNaN(max) || math.IsInf(max, 0) {
+				return fmt.Errorf("invalid max value: must be a finite number")
+			}
+		}
+		bits := field.Type().Bits()
+		return applyBounds(val, min, max, minStr != "", maxStr != "",
+			func(n float64) string { return strconv.FormatFloat(n, 'g', -1, bits) }, customErr)
+
+	case reflect.Slice:
+		return fmt.Errorf("min/max range tags are not supported on slice fields")
 	default:
-		return reflect.DeepEqual(v.Interface(), reflect.Zero(v.Type()).Interface())
+		return fmt.Errorf("range validation not supported for type %s", field.Type())
 	}
-}
-
-// RangeValidator checks if a field's value falls within a specified range
-type RangeValidator struct{}
-
-// Validate checks if the field satisfies the range constraints
-func (v *RangeValidator) Validate(field reflect.Value, tags reflect.StructTag) error {
-	min := tags.Get(MinTag)
-	max := tags.Get(MaxTag)
-	if min == "" && max == "" {
-		return nil
-	}
-
-	var err error
-	value := field.Interface()
-	errMsg := tags.Get(RangeErrTag)
-	if errMsg == "" {
-		errMsg = ErrOutOfRange
-	}
-
-	switch v := value.(type) {
-	case int, int64:
-		err = validateIntRange(v, min, max)
-	case float64:
-		err = validateFloatRange(v, min, max)
-	}
-
-	if err != nil {
-		return fmt.Errorf("%s: %w", errMsg, err)
-	}
-	return nil
-}
-
-// validateIntRange checks if an integer value falls within the specified range
-func validateIntRange(value interface{}, minStr, maxStr string) error {
-	var val int64
-	switch v := value.(type) {
-	case int:
-		val = int64(v)
-	case int64:
-		val = v
-	default:
-		return fmt.Errorf("unsupported integer type: %T", value)
-	}
-
-	if minStr != "" {
-		min, err := strconv.ParseInt(minStr, 10, 64)
-		if err != nil {
-			return fmt.Errorf("invalid min value: %w", err)
-		}
-		if val < min {
-			return fmt.Errorf("value %d is less than minimum %d", val, min)
-		}
-	}
-
-	if maxStr != "" {
-		max, err := strconv.ParseInt(maxStr, 10, 64)
-		if err != nil {
-			return fmt.Errorf("invalid max value: %w", err)
-		}
-		if val > max {
-			return fmt.Errorf("value %d is greater than maximum %d", val, max)
-		}
-	}
-
-	return nil
-}
-
-// validateFloatRange checks if a float value falls within the specified range
-func validateFloatRange(value float64, minStr, maxStr string) error {
-	if minStr != "" {
-		min, err := strconv.ParseFloat(minStr, 64)
-		if err != nil {
-			return fmt.Errorf("invalid min value: %w", err)
-		}
-		if value < min {
-			return fmt.Errorf("value %f is less than minimum %f", value, min)
-		}
-	}
-
-	if maxStr != "" {
-		max, err := strconv.ParseFloat(maxStr, 64)
-		if err != nil {
-			return fmt.Errorf("invalid max value: %w", err)
-		}
-		if value > max {
-			return fmt.Errorf("value %f is greater than maximum %f", value, max)
-		}
-	}
-
-	return nil
 }

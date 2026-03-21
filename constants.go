@@ -1,6 +1,6 @@
 package config
 
-// Tag keys used for configuration
+// Tag keys used for configuration.
 const (
 	EnvTag      = "env"
 	RequiredTag = "required"
@@ -10,15 +10,7 @@ const (
 	RangeErrTag = "range_error"
 )
 
-// Common tag values
+// Common tag values.
 const (
-	TagTrue = "true"
-)
-
-// Error messages
-const (
-	ErrRequiredField   = "required field is empty"
-	ErrOutOfRange      = "value out of range"
-	ErrUnsupportedType = "unsupported type: %v"
-	ErrConfigNotPtr    = "config must be a pointer"
+	tagTrue = "true"
 )
