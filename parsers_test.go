@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -24,9 +23,9 @@ func TestParseValue_EmptyStringIsNoop(t *testing.T) {
 
 func TestParseValue_EmptyStringIsNoop_Slice(t *testing.T) {
 	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
-	field.Set(reflect.ValueOf([]int64{99})) // sentinel: parseSlice("") would reset this
+	field.Set(reflect.ValueOf([]int64{99}))
 	assert.NoError(t, parseValue("", field))
-	assert.Equal(t, []int64{99}, field.Interface()) // guard: early return left it intact
+	assert.Equal(t, []int64{99}, field.Interface())
 }
 
 func TestParseValue_Int64(t *testing.T) {
@@ -59,7 +58,7 @@ func TestParseValue_Duration(t *testing.T) {
 	}{
 		{"5m", 5 * time.Minute, false},
 		{"30s", 30 * time.Second, false},
-		{"30", 0, true},   // bare integer rejected
+		{"30", 0, true},
 		{"invalid", 0, true},
 		{"-10s", -10 * time.Second, false},
 	}
@@ -137,17 +136,7 @@ func TestParseSlice_InvalidElement(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestParseValue_PointerToStructErrors(t *testing.T) {
-	type Inner struct{ Port int }
-	// reflect.New(*Inner).Elem() gives an addressable *Inner value (kind=Ptr, Elem=Struct).
-	field := reflect.New(reflect.TypeOf((*Inner)(nil))).Elem()
-	err := parseValue("foo", field)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "pointer to struct is not supported")
-}
-
 func TestParseSlice_StructSlice(t *testing.T) {
-	// []SomeStruct is not a supported slice element type; parseValue must error.
 	type Inner struct{ Port int }
 	field := reflect.New(reflect.SliceOf(reflect.TypeOf(Inner{}))).Elem()
 	err := parseValue("foo,bar", field)
@@ -159,32 +148,6 @@ func TestParseSlice_DurationSlice(t *testing.T) {
 	field := reflect.New(reflect.TypeOf([]time.Duration{})).Elem()
 	assert.NoError(t, parseValue("1s,2m,500ms", field))
 	assert.Equal(t, []time.Duration{time.Second, 2 * time.Minute, 500 * time.Millisecond}, field.Interface())
-}
-
-func TestParseValue_Decoder(t *testing.T) {
-	field := reflect.New(reflect.TypeOf(customAddr(""))).Elem()
-	assert.NoError(t, parseValue("localhost:8080", field))
-	assert.Equal(t, customAddr("localhost:8080"), field.Interface())
-}
-
-func TestParseValue_StructDecoder(t *testing.T) {
-	field := reflect.New(reflect.TypeOf(structAddr{})).Elem()
-	assert.NoError(t, parseValue("127.0.0.1:9000", field))
-	assert.Equal(t, structAddr{Raw: "127.0.0.1:9000"}, field.Interface())
-}
-
-// structErrAddr is a struct-kinded Decoder whose Decode always fails.
-type structErrAddr struct{ Raw string }
-
-func (a *structErrAddr) Decode(value string) error {
-	return fmt.Errorf("structErrAddr: forced error for %q", value)
-}
-
-func TestParseValue_StructDecoder_Error(t *testing.T) {
-	field := reflect.New(reflect.TypeOf(structErrAddr{})).Elem()
-	err := parseValue("anything", field)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "structErrAddr: forced error")
 }
 
 func TestDefaultValues_Slice(t *testing.T) {
@@ -231,12 +194,6 @@ func TestParseSlice_WhitespaceOnlyInt(t *testing.T) {
 	field := reflect.New(reflect.TypeOf([]int64{})).Elem()
 	assert.NoError(t, parseValue(" ", field))
 	assert.Equal(t, []int64{0}, field.Interface())
-}
-
-func TestParseSlice_DecoderEmptyToken(t *testing.T) {
-	field := reflect.New(reflect.TypeOf([]customAddr{})).Elem()
-	assert.NoError(t, parseValue("a,,b", field))
-	assert.Equal(t, []customAddr{"a", "", "b"}, field.Interface())
 }
 
 func TestParseSlice_Float64Slice(t *testing.T) {

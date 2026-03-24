@@ -1,6 +1,6 @@
 # Config
 
-A flexible, type-safe environment variable configuration loader for Go applications.
+A simple, type-safe environment variable configuration loader for Go applications.
 
 ## Features
 
@@ -12,14 +12,9 @@ A flexible, type-safe environment variable configuration loader for Go applicati
   - Booleans
   - Slices of supported types (comma-separated values), including `[]time.Duration`
   - Durations (`time.Duration`; values must include an explicit unit, e.g. `"30s"`, `"5m"`)
-- `time.Time`, `[]time.Time`, and `[]*time.Time` are **not** supported — use `time.Duration`, a string field, or a custom `Decoder` type
 - Nested struct support
 - Required field validation
 - Default values
-- Range validation (min/max)
-- Custom error messages
-- Prefix support for environment variables
-- Extensible via the `Decoder` interface for custom types
 
 ## Installation
 
@@ -96,81 +91,11 @@ type Config struct {
 > default triggers an error. The tag value must be exactly `"true"` or `"false"` (lowercase);
 > other values like `"True"` or `"TRUE"` return an error.
 
-### Range Validation
-
-```go
-type Config struct {
-	Port int `env:"PORT" min:"1024" max:"65535"`
-	Age  int `env:"AGE" min:"0" max:"120" range_error:"Age must be between 0 and 120"`
-}
-```
-
-For `time.Duration` fields, `min` and `max` accept either a duration string or a
-nanosecond integer:
-
-```go
-type Config struct {
-	Timeout time.Duration `env:"TIMEOUT" min:"1s" max:"60s"`
-}
-```
-
-> **Note:** Range validation runs after parsing regardless of whether the env var was
-> provided. A non-required field that is absent (no env var, no default) retains its zero
-> value, which is still checked against `min`/`max` — add a `default` tag or remove the
-> range tags if a zero value should be allowed.
-
 ### Slices
 
 Slice fields split the env var value on commas. Leading and trailing whitespace is
 trimmed from each element. Setting a slice field to an empty string (`TAGS=""`) is
 a no-op — the field retains its zero value (`nil`).
-
-## Custom Environment Variable Prefix
-
-```go
-loader := config.NewEnvLoader(
-	config.WithPrefix("MYAPP_"),
-)
-
-// Will look for MYAPP_PORT instead of PORT
-type Config struct {
-	Port int `env:"PORT" default:"8080"`
-}
-
-cfg := &Config{}
-if err := loader.LoadConfig(cfg); err != nil {
-	log.Fatal(err)
-}
-```
-
-## Custom Types via Decoder
-
-Implement the `Decoder` interface on any type to control its own parsing. `Decode` is called
-instead of the built-in type switch when the field's pointer type satisfies the interface.
-This works for scalar fields, slice elements, and value (non-pointer) struct fields.
-
-When the env var is absent and the field is not required, `Decode` is not called — the field
-retains its zero value, the same as built-in types.
-
-```go
-type HostPort struct {
-	Host string
-	Port string
-}
-
-func (hp *HostPort) Decode(value string) error {
-	parts := strings.SplitN(value, ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("expected host:port, got %q", value)
-	}
-	hp.Host, hp.Port = parts[0], parts[1]
-	return nil
-}
-
-type Config struct {
-	Addr HostPort `env:"LISTEN_ADDR"`
-}
-```
 
 ## License
 
