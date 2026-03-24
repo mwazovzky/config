@@ -13,37 +13,14 @@ var durationType = reflect.TypeOf(time.Duration(0))
 
 // parseValue sets field to the parsed form of value.
 //
-// Priority order:
-//  1. If *field implements Decoder, call Decode.
-//     In the normal LoadConfig flow, direct Decoder fields are handled earlier
-//     in loadField; this Decoder check is reached for slice elements.
-//  2. Type-specific cases (types that share a Kind with another, e.g. time.Duration).
-//  3. Kind-based cases covering all int/uint/float widths, string, bool, and slice.
-//
 // An empty value is a no-op for all built-in types (field retains its zero value).
 // The required check is handled separately in loadField.
 func parseValue(value string, field reflect.Value) error {
-	// 1. Custom Decoder takes priority.
-	// In the slice-element context (the only path where parseValue is called for Decoder
-	// types), Decode always receives the raw token value — including "" for empty tokens —
-	// unlike built-in types which treat "" as a no-op. Absent non-required direct fields
-	// are handled in loadField and never reach here.
-	if d, ok := field.Addr().Interface().(Decoder); ok {
-		return d.Decode(value)
-	}
-
-	// Belt-and-suspenders guard for direct parseValue callers.
-	// In normal LoadConfig flow, loadStruct catches both *Struct and []*Struct
-	// before any parsing occurs, so this guard is only reachable via unit tests.
-	if field.Kind() == reflect.Ptr && field.Type().Elem().Kind() == reflect.Struct {
-		return fmt.Errorf("pointer to struct is not supported for type %s; use a value struct instead", field.Type())
-	}
-
 	if value == "" {
 		return nil
 	}
 
-	// 2. Type-specific cases first (types that share a Kind).
+	// Type-specific cases first (types that share a Kind).
 	switch field.Type() {
 	case durationType:
 		d, err := time.ParseDuration(value)
@@ -54,7 +31,7 @@ func parseValue(value string, field reflect.Value) error {
 		return nil
 	}
 
-	// 3. Kind-based cases.
+	// Kind-based cases.
 	switch field.Kind() {
 	case reflect.String:
 		field.SetString(value)
