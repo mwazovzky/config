@@ -45,7 +45,10 @@ func loadStruct(v reflect.Value) error {
 			continue
 		}
 
-		if field.Kind() == reflect.Struct {
+		// Only recurse into struct fields that have no env tag.
+		// A struct field with an env tag (e.g. time.Time) should fall through
+		// to loadField where parseValue will return an "unsupported type" error.
+		if field.Kind() == reflect.Struct && fieldType.Tag.Get(EnvTag) == "" {
 			if err := loadStruct(field); err != nil {
 				if fieldType.Anonymous {
 					return err

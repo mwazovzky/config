@@ -479,3 +479,25 @@ func TestRequiredFalse_AbsentEnvVar(t *testing.T) {
 	assert.Equal(t, "", cfg.Host)
 	assert.Equal(t, 0, cfg.Port)
 }
+
+func TestStructFieldWithEnvTagErrors(t *testing.T) {
+	// A struct field tagged with env must not be silently recursed into.
+	// It should fall through to loadField/parseValue and return an error.
+	type Cfg struct {
+		T time.Time `env:"SOME_TIME"`
+	}
+	t.Setenv("SOME_TIME", "2024-01-01")
+	err := LoadConfig(&Cfg{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported type")
+}
+
+func TestStructFieldWithEnvTagRequired(t *testing.T) {
+	type Cfg struct {
+		T time.Time `env:"REQ_TIME" required:"true"`
+	}
+	unsetEnv(t, "REQ_TIME")
+	err := LoadConfig(&Cfg{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "required")
+}
